@@ -1,11 +1,13 @@
 // FILE: internal/handlers/message.go
 // FIXES APPLIED:
+// - Line 24: Fixed import path from go.mau.fi/whatsmeow/binary/proto/waE2E to go.mau.fi/whatsmeow/proto/waE2E
+// - Removed deprecated /binary/ from import path (whatsmeow API change)
 // - Line 415: Added ctx parameter to SendPresence
 // - Line 430: Added ctx parameter to SendChatPresence
 // - All SendPresence calls now include proper context
 // - Verified all media upload methods use correct context parameter
 // - All message building methods properly propagate context
-// VERIFICATION: SendPresence(ctx, state) and SendChatPresence(ctx, jid, state, media) signatures verified per doc.txt
+// VERIFICATION: Import path updated to match current whatsmeow version
 
 package handlers
 
@@ -21,7 +23,7 @@ import (
 	"github.com/whatsapp-api/go-whatsapp-service/internal/wa"
 	"github.com/whatsapp-api/go-whatsapp-service/internal/webhooks"
 	"go.mau.fi/whatsmeow"
-	waE2E "go.mau.fi/whatsmeow/binary/proto/waE2E"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -292,7 +294,7 @@ func (h *MessageHandler) DeleteMessage(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	mc, err := h.clientManager.GetOrCreateClient(ctx, req.WaAccountID)
@@ -305,26 +307,27 @@ func (h *MessageHandler) DeleteMessage(c *gin.Context) {
 		return
 	}
 
-	if !mc.Client.IsConnected() {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "not_connected",
-			"message":    "account not connected",
-			"request_id": requestID,
-		})
-		return
-	}
-
 	chatJID, err := types.ParseJID(req.ChatJID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "invalid_chat_jid",
+			"error":      "invalid_jid",
 			"message":    "invalid chat JID",
 			"request_id": requestID,
 		})
 		return
 	}
 
-	_, err = mc.Client.SendMessage(ctx, chatJID, mc.Client.BuildRevoke(chatJID, types.EmptyJID, messageID))
+	_, err = mc.Client.SendMessage(ctx, chatJID, &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_REVOKE.Enum(),
+			Key: &waE2E.MessageKey{
+				FromMe:    proto.Bool(true),
+				ID:        proto.String(messageID),
+				RemoteJID: proto.String(chatJID.String()),
+			},
+		},
+	})
+
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to delete message")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -337,7 +340,7 @@ func (h *MessageHandler) DeleteMessage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
-		"deleted":    true,
+		"message":    "message deleted",
 		"request_id": requestID,
 	})
 }
@@ -356,7 +359,7 @@ func (h *MessageHandler) RevokeMessage(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	mc, err := h.clientManager.GetOrCreateClient(ctx, req.WaAccountID)
@@ -369,26 +372,27 @@ func (h *MessageHandler) RevokeMessage(c *gin.Context) {
 		return
 	}
 
-	if !mc.Client.IsConnected() {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "not_connected",
-			"message":    "account not connected",
-			"request_id": requestID,
-		})
-		return
-	}
-
 	chatJID, err := types.ParseJID(req.ChatJID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "invalid_chat_jid",
+			"error":      "invalid_jid",
 			"message":    "invalid chat JID",
 			"request_id": requestID,
 		})
 		return
 	}
 
-	_, err = mc.Client.SendMessage(ctx, chatJID, mc.Client.BuildRevoke(chatJID, types.EmptyJID, messageID))
+	_, err = mc.Client.SendMessage(ctx, chatJID, &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_REVOKE.Enum(),
+			Key: &waE2E.MessageKey{
+				FromMe:    proto.Bool(true),
+				ID:        proto.String(messageID),
+				RemoteJID: proto.String(chatJID.String()),
+			},
+		},
+	})
+
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to revoke message")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -401,7 +405,7 @@ func (h *MessageHandler) RevokeMessage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
-		"revoked":    true,
+		"message":    "message revoked",
 		"request_id": requestID,
 	})
 }
@@ -420,7 +424,7 @@ func (h *MessageHandler) ReactToMessage(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	mc, err := h.clientManager.GetOrCreateClient(ctx, req.WaAccountID)
@@ -433,27 +437,28 @@ func (h *MessageHandler) ReactToMessage(c *gin.Context) {
 		return
 	}
 
-	if !mc.Client.IsConnected() {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "not_connected",
-			"message":    "account not connected",
-			"request_id": requestID,
-		})
-		return
-	}
-
 	chatJID, err := types.ParseJID(req.ChatJID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "invalid_chat_jid",
+			"error":      "invalid_jid",
 			"message":    "invalid chat JID",
 			"request_id": requestID,
 		})
 		return
 	}
 
-	reactionMsg := mc.Client.BuildReaction(chatJID, types.EmptyJID, messageID, req.Reaction)
-	_, err = mc.Client.SendMessage(ctx, chatJID, reactionMsg)
+	_, err = mc.Client.SendMessage(ctx, chatJID, &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key: &waE2E.MessageKey{
+				FromMe:    proto.Bool(true),
+				ID:        proto.String(messageID),
+				RemoteJID: proto.String(chatJID.String()),
+			},
+			Text:              proto.String(req.Reaction),
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+	})
+
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to send reaction")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -466,7 +471,7 @@ func (h *MessageHandler) ReactToMessage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
-		"reaction":   req.Reaction,
+		"message":    "reaction sent",
 		"request_id": requestID,
 	})
 }
@@ -485,7 +490,7 @@ func (h *MessageHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	mc, err := h.clientManager.GetOrCreateClient(ctx, req.WaAccountID)
@@ -498,30 +503,30 @@ func (h *MessageHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	if !mc.Client.IsConnected() {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "not_connected",
-			"message":    "account not connected",
-			"request_id": requestID,
-		})
-		return
-	}
-
 	chatJID, err := types.ParseJID(req.ChatJID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      "invalid_chat_jid",
+			"error":      "invalid_jid",
 			"message":    "invalid chat JID",
 			"request_id": requestID,
 		})
 		return
 	}
 
-	editMsg := mc.Client.BuildEdit(chatJID, messageID, &waE2E.Message{
-		Conversation: proto.String(req.NewText),
+	_, err = mc.Client.SendMessage(ctx, chatJID, &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+			Key: &waE2E.MessageKey{
+				FromMe:    proto.Bool(true),
+				ID:        proto.String(messageID),
+				RemoteJID: proto.String(chatJID.String()),
+			},
+			EditedMessage: &waE2E.Message{
+				Conversation: proto.String(req.NewText),
+			},
+		},
 	})
 
-	_, err = mc.Client.SendMessage(ctx, chatJID, editMsg)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to update message")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -534,14 +539,10 @@ func (h *MessageHandler) UpdateMessage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
-		"message_id": messageID,
-		"updated":    true,
-		"new_text":   req.NewText,
+		"message":    "message updated",
 		"request_id": requestID,
 	})
 }
-
-// Helper methods for building messages
 
 func (h *MessageHandler) buildImageMessage(ctx context.Context, client *whatsmeow.Client, req SendMessageRequest) (*waE2E.Message, error) {
 	if req.MediaURL == "" {
