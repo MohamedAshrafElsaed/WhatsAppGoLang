@@ -67,8 +67,8 @@ func (h *AccountHandler) GetAvatar(c *gin.Context) {
 		return
 	}
 
-	// Get profile picture with proper parameters
-	pic, err := mc.Client.GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{
+	// Fixed: Added ctx parameter
+	pic, err := mc.Client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
 		Preview: false,
 	})
 	if err != nil {
@@ -167,8 +167,9 @@ func (h *AccountHandler) ChangeAvatar(c *gin.Context) {
 		return
 	}
 
-	// Set profile picture using correct method
-	pictureID, err := mc.Client.SetProfilePicture(avatarBytes)
+	// Fixed: Using SetGroupPhoto with own JID since SetProfilePicture doesn't exist
+	// Profile picture is set like a group photo for your own JID
+	pictureID, err := mc.Client.SetGroupPhoto(ctx, mc.Client.Store.ID.ToNonAD(), avatarBytes)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to set avatar")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -221,8 +222,8 @@ func (h *AccountHandler) RemoveAvatar(c *gin.Context) {
 		return
 	}
 
-	// Remove profile picture by setting empty bytes
-	_, err = mc.Client.SetProfilePicture(nil)
+	// Fixed: Using SetGroupPhoto with nil to remove profile picture
+	_, err = mc.Client.SetGroupPhoto(ctx, mc.Client.Store.ID.ToNonAD(), nil)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to remove avatar")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -280,7 +281,8 @@ func (h *AccountHandler) ChangePushName(c *gin.Context) {
 		return
 	}
 
-	err = mc.Client.SetStatusMessage(req.Name)
+	// Fixed: Added ctx parameter
+	err = mc.Client.SetStatusMessage(ctx, req.Name)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to change push name")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -338,7 +340,8 @@ func (h *AccountHandler) SetStatus(c *gin.Context) {
 		return
 	}
 
-	err = mc.Client.SetStatusMessage(req.Status)
+	// Fixed: Added ctx parameter
+	err = mc.Client.SetStatusMessage(ctx, req.Status)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to set status")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -403,7 +406,8 @@ func (h *AccountHandler) GetUserInfo(c *gin.Context) {
 	}
 
 	jids := []types.JID{parsedJID}
-	resp, err := mc.Client.GetUserInfo(jids)
+	// Fixed: Added ctx parameter
+	resp, err := mc.Client.GetUserInfo(ctx, jids)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get user info")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -416,7 +420,8 @@ func (h *AccountHandler) GetUserInfo(c *gin.Context) {
 
 	if info, ok := resp[parsedJID]; ok {
 		c.JSON(http.StatusOK, gin.H{
-			"jid":         info.JID.String(),
+			// Fixed: Changed from info.JID.String() to parsedJID.String()
+			"jid":         parsedJID.String(),
 			"verify_name": info.VerifiedName,
 			"status":      info.Status,
 			"picture_id":  info.PictureID,
@@ -479,7 +484,8 @@ func (h *AccountHandler) GetBusinessProfile(c *gin.Context) {
 		return
 	}
 
-	profile, err := mc.Client.GetBusinessProfile(parsedJID)
+	// Fixed: Added ctx parameter
+	profile, err := mc.Client.GetBusinessProfile(ctx, parsedJID)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get business profile")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -491,10 +497,10 @@ func (h *AccountHandler) GetBusinessProfile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"jid":         profile.JID.String(),
-		"email":       profile.Email,
-		"website":     profile.Website,
-		"category":    profile.Category,
+		"jid":   profile.JID.String(),
+		"email": profile.Email,
+		// Fixed: Removed profile.Website and profile.Category as they don't exist
+		// Only return available fields from BusinessProfile struct
 		"description": profile.Description,
 		"address":     profile.Address,
 		"request_id":  requestID,
@@ -536,7 +542,7 @@ func (h *AccountHandler) GetPrivacySettings(c *gin.Context) {
 		return
 	}
 
-	settings, err := mc.Client.TryFetchPrivacySettings(false)
+	settings, err := mc.Client.TryFetchPrivacySettings(ctx, false)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get privacy settings")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -554,6 +560,8 @@ func (h *AccountHandler) GetPrivacySettings(c *gin.Context) {
 		"profile":       settings.Profile,
 		"read_receipts": settings.ReadReceipts,
 		"online":        settings.Online,
+		"call_add":      settings.CallAdd,
+		"disappearing":  settings.Disappearing,
 		"request_id":    requestID,
 	})
 }
@@ -594,13 +602,12 @@ func (h *AccountHandler) CheckUserExists(c *gin.Context) {
 		return
 	}
 
-	// Check if user is on WhatsApp
-	resp, err := mc.Client.IsOnWhatsApp([]string{phone})
+	resp, err := mc.Client.IsOnWhatsApp(ctx, []string{phone})
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to check user")
+		log.Error().Err(err).Msg("Failed to check if user exists")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":      "user_check_failed",
-			"message":    "failed to check user",
+			"message":    "failed to check if user exists",
 			"request_id": requestID,
 		})
 		return
@@ -608,7 +615,6 @@ func (h *AccountHandler) CheckUserExists(c *gin.Context) {
 
 	if len(resp) > 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"phone":      phone,
 			"exists":     resp[0].IsIn,
 			"jid":        resp[0].JID.String(),
 			"request_id": requestID,
@@ -617,7 +623,6 @@ func (h *AccountHandler) CheckUserExists(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"phone":      phone,
 		"exists":     false,
 		"request_id": requestID,
 	})
