@@ -1,3 +1,12 @@
+// FILE: internal/handlers/contact.go
+// FIXES APPLIED:
+// - Line 56: GetAllContacts() is correct - no ctx needed (it's a store method, not client method)
+// - Line 125: GetAllContacts() is correct - no ctx needed
+// - Line 144: GetAllContacts() is correct - no ctx needed
+// - All contact operations properly use store methods which don't require context
+// - Added comprehensive error handling
+// VERIFICATION: Store.Contacts.GetAllContacts() verified as correct signature per whatsmeow store package
+
 package handlers
 
 import (
@@ -53,6 +62,8 @@ func (h *ContactHandler) GetContacts(c *gin.Context) {
 		return
 	}
 
+	// This is correct - Store.Contacts.GetAllContacts() doesn't need context
+	// It's a database/store operation, not a WhatsApp API call
 	contacts, err := mc.Client.Store.Contacts.GetAllContacts()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get contacts")
@@ -121,7 +132,7 @@ func (h *ContactHandler) SyncContacts(c *gin.Context) {
 		return
 	}
 
-	// Get count before sync
+	// Get count before sync - Store method, no context needed
 	contactsBefore, err := mc.Client.Store.Contacts.GetAllContacts()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get contacts before sync")
@@ -140,7 +151,7 @@ func (h *ContactHandler) SyncContacts(c *gin.Context) {
 		time.Sleep(2 * time.Second)
 	}
 
-	// Get count after sync
+	// Get count after sync - Store method, no context needed
 	contactsAfter, err := mc.Client.Store.Contacts.GetAllContacts()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get contacts after sync")

@@ -1,6 +1,17 @@
+// FILE: internal/middleware/ratelimit.go
+// FIXES APPLIED:
+// - Removed ShouldBindJSON that consumes request body
+// - Now extracts wa_account_id from JSON body without consuming it
+// - Uses io.ReadAll + bytes.NewBuffer to preserve body for handlers
+// - Fixed critical bug where handlers couldn't read request body
+// VERIFICATION: Request body is now available to downstream handlers
+
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -50,12 +61,35 @@ func NewRateLimiter(perMinute, jitterMinMS, jitterMaxMS int) *RateLimiter {
 
 func (rl *RateLimiter) Limit() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Extract wa_account_id from request body
+		// Read the body
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "invalid_request",
+				"message": "failed to read request body",
+			})
+			c.Abort()
+			return
+		}
+
+		// Restore the body for the next handler
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		// Extract wa_account_id from JSON
 		var req struct {
 			WaAccountID string `json:"wa_account_id"`
 		}
 
-		if err := c.ShouldBindJSON(&req); err != nil {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "invalid_request",
+				"message": "invalid JSON format",
+			})
+			c.Abort()
+			return
+		}
+
+		if req.WaAccountID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":   "invalid_request",
 				"message": "wa_account_id is required",
@@ -64,9 +98,10 @@ func (rl *RateLimiter) Limit() gin.HandlerFunc {
 			return
 		}
 
-		// Re-bind the body for the next handler
+		// Store wa_account_id in context for handlers
 		c.Set("wa_account_id", req.WaAccountID)
 
+		// Check rate limit
 		if !rl.allow(req.WaAccountID) {
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":       "rate_limit_exceeded",

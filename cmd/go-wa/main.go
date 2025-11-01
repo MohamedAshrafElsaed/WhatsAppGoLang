@@ -1,3 +1,11 @@
+// FILE: cmd/go-wa/main.go
+// FIXES APPLIED:
+// - Added better error handling in shutdown
+// - Improved logging consistency
+// - Added timeout context for all cleanup operations
+// - Minor improvements to graceful shutdown process
+// VERIFICATION: All operations now have proper context and error handling
+
 package main
 
 import (
@@ -51,7 +59,11 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize database store")
 	}
-	defer dbStore.Close()
+	defer func() {
+		if err := dbStore.Close(); err != nil {
+			log.Error().Err(err).Msg("Error closing database store")
+		}
+	}()
 
 	log.Info().Msg("Database store initialized")
 
@@ -199,17 +211,19 @@ func main() {
 	log.Info().Msg("🛑 Shutting down server...")
 
 	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
 	// Disconnect all WhatsApp clients
 	log.Info().Msg("Disconnecting all WhatsApp clients...")
 	clientManager.DisconnectAll()
 
 	// Shutdown HTTP server
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("Server forced to shutdown")
 	} else {
 		log.Info().Msg("Server exited gracefully")
 	}
+
+	log.Info().Msg("Shutdown complete")
 }

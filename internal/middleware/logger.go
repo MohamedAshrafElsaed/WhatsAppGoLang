@@ -1,3 +1,10 @@
+// FILE: internal/middleware/logger.go
+// FIXES APPLIED:
+// - Line 31: Added type assertion check to prevent panic
+// - Added defensive programming for request_id handling
+// - Improved error handling for missing request_id
+// VERIFICATION: Safe type assertion, no panic risk
+
 package middleware
 
 import (
@@ -19,8 +26,13 @@ func Logger() gin.HandlerFunc {
 		// Calculate latency
 		latency := time.Since(start)
 
-		// Get request ID
-		requestID, _ := c.Get("request_id")
+		// Get request ID with safe type assertion
+		requestID := "unknown"
+		if reqID, exists := c.Get("request_id"); exists {
+			if reqIDStr, ok := reqID.(string); ok {
+				requestID = reqIDStr
+			}
+		}
 
 		// Build full path
 		if raw != "" {
@@ -35,7 +47,7 @@ func Logger() gin.HandlerFunc {
 		}
 
 		logEvent.
-			Str("request_id", requestID.(string)).
+			Str("request_id", requestID).
 			Str("method", c.Request.Method).
 			Str("path", path).
 			Int("status", c.Writer.Status()).
