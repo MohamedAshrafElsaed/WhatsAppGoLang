@@ -31,11 +31,20 @@ func main() {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	}
 
+	log.Info().Msg("Starting Go WhatsApp Service...")
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
+
+	log.Info().
+		Str("port", cfg.Port).
+		Str("env", cfg.Env).
+		Int("max_sessions", cfg.MaxConcurrentSessions).
+		Dur("session_idle_ttl", cfg.SessionIdleTTL).
+		Msg("Configuration loaded")
 
 	// Initialize database store
 	dbStore, err := store.NewPostgresStore(cfg.DatabaseURL)
@@ -44,11 +53,15 @@ func main() {
 	}
 	defer dbStore.Close()
 
-	// Initialize WhatsApp client manager
-	clientManager := wa.NewClientManager(dbStore, cfg)
+	log.Info().Msg("Database store initialized")
 
-	// Initialize webhook sender
+	// Initialize webhook sender BEFORE client manager
 	webhookSender := webhooks.NewSender(cfg.LaravelWebhookBase, cfg.SigningSecret)
+	log.Info().Str("webhook_base", cfg.LaravelWebhookBase).Msg("Webhook sender initialized")
+
+	// Initialize WhatsApp client manager WITH webhook sender
+	clientManager := wa.NewClientManager(dbStore, cfg, webhookSender)
+	log.Info().Msg("WhatsApp client manager initialized")
 
 	// Setup Gin router
 	if cfg.Env == "production" {
@@ -61,7 +74,10 @@ func main() {
 	router.Use(middleware.Logger())
 	router.Use(middleware.CORS())
 
-	// Health endpoints
+	// Apply rate limiting to message endpoints
+	rateLimiter := middleware.NewRateLimiter(cfg.SendRatePerMinute, cfg.SendJitterMinMS, cfg.SendJitterMaxMS)
+
+	// Health endpoints (no rate limiting)
 	router.GET("/healthz", handlers.HealthCheck(dbStore))
 	router.GET("/readyz", handlers.ReadinessCheck(clientManager))
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -80,8 +96,9 @@ func main() {
 			sessions.GET("/:waAccountId/status", h.GetStatus)
 		}
 
-		// Message operations
+		// Message operations (WITH rate limiting)
 		messages := v1.Group("/messages")
+		messages.Use(rateLimiter.Limit())
 		{
 			h := handlers.NewMessageHandler(clientManager, webhookSender)
 			messages.POST("", h.SendMessage)
@@ -107,6 +124,7 @@ func main() {
 			groups.POST("/:groupId/announce", h.SetGroupAnnounce)
 			groups.POST("/:groupId/topic", h.SetGroupTopic)
 			groups.GET("/:groupId/invite_link", h.GetGroupInviteLink)
+			groups.POST("/:groupId/leave", h.LeaveGroup)
 		}
 
 		// Account operations
@@ -115,7 +133,9 @@ func main() {
 			h := handlers.NewAccountHandler(clientManager)
 			account.GET("/avatar", h.GetAvatar)
 			account.POST("/avatar", h.ChangeAvatar)
+			account.DELETE("/avatar", h.RemoveAvatar)
 			account.POST("/push_name", h.ChangePushName)
+			account.POST("/status", h.SetStatus)
 			account.GET("/user_info", h.GetUserInfo)
 			account.GET("/business_profile", h.GetBusinessProfile)
 			account.GET("/privacy", h.GetPrivacySettings)
@@ -130,6 +150,8 @@ func main() {
 			chats.GET("/:chatId/messages", h.GetChatMessages)
 			chats.POST("/:chatId/pin", h.PinChat)
 			chats.POST("/:chatId/read", h.MarkAsRead)
+			chats.POST("/:chatId/archive", h.ArchiveChat)
+			chats.POST("/:chatId/mute", h.MuteChat)
 		}
 
 		// Contact operations
@@ -137,6 +159,7 @@ func main() {
 		{
 			h := handlers.NewContactHandler(clientManager)
 			contacts.GET("", h.GetContacts)
+			contacts.POST("/sync", h.SyncContacts)
 		}
 
 		// Newsletter operations
@@ -158,7 +181,11 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		log.Info().Str("port", cfg.Port).Msg("Starting Go WhatsApp Service")
+		log.Info().
+			Str("port", cfg.Port).
+			Str("env", cfg.Env).
+			Msg("🚀 Go WhatsApp Service started successfully")
+
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal().Err(err).Msg("Failed to start server")
 		}
@@ -169,18 +196,20 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Info().Msg("Shutting down server...")
+	log.Info().Msg("🛑 Shutting down server...")
 
-	// Graceful shutdown
+	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Disconnect all WhatsApp clients
+	log.Info().Msg("Disconnecting all WhatsApp clients...")
 	clientManager.DisconnectAll()
 
+	// Shutdown HTTP server
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("Server forced to shutdown")
+		log.Error().Err(err).Msg("Server forced to shutdown")
+	} else {
+		log.Info().Msg("Server exited gracefully")
 	}
-
-	log.Info().Msg("Server exited")
 }

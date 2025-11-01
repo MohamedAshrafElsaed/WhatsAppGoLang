@@ -9,17 +9,19 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/whatsapp-api/go-whatsapp-service/internal/config"
 	"github.com/whatsapp-api/go-whatsapp-service/internal/store"
+	"github.com/whatsapp-api/go-whatsapp-service/internal/webhooks"
 	"go.mau.fi/whatsmeow"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
 type ClientManager struct {
-	clients  map[string]*ManagedClient
-	mu       sync.RWMutex
-	store    *store.PostgresStore
-	config   *config.Config
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	clients       map[string]*ManagedClient
+	mu            sync.RWMutex
+	store         *store.PostgresStore
+	config        *config.Config
+	webhookSender *webhooks.Sender
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
 }
 
 type ManagedClient struct {
@@ -30,17 +32,20 @@ type ManagedClient struct {
 	mu           sync.RWMutex
 }
 
-func NewClientManager(store *store.PostgresStore, cfg *config.Config) *ClientManager {
+func NewClientManager(store *store.PostgresStore, cfg *config.Config, webhookSender *webhooks.Sender) *ClientManager {
 	cm := &ClientManager{
-		clients:  make(map[string]*ManagedClient),
-		store:    store,
-		config:   cfg,
-		stopChan: make(chan struct{}),
+		clients:       make(map[string]*ManagedClient),
+		store:         store,
+		config:        cfg,
+		webhookSender: webhookSender,
+		stopChan:      make(chan struct{}),
 	}
 
 	// Start idle session cleanup goroutine
 	cm.wg.Add(1)
 	go cm.cleanupIdleSessions()
+
+	log.Info().Msg("Client manager initialized with webhook integration")
 
 	return cm
 }
@@ -68,14 +73,9 @@ func (cm *ClientManager) GetOrCreateClient(ctx context.Context, waAccountID stri
 	}
 
 	// Create new client
-	deviceStore, err := cm.store.GetDeviceStore(waAccountID)
+	device, err := cm.store.GetDeviceStore(waAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get device store: %w", err)
-	}
-
-	device, err := deviceStore.GetDevice()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get device: %w", err)
 	}
 
 	logger := waLog.Stdout("Client", "INFO", true)
@@ -88,9 +88,14 @@ func (cm *ClientManager) GetOrCreateClient(ctx context.Context, waAccountID stri
 		Connected:    false,
 	}
 
+	// Setup event handlers for this client
+	SetupEventHandlers(mc, cm.webhookSender)
+
 	cm.clients[waAccountID] = mc
 
-	log.Info().Str("wa_account_id", waAccountID).Msg("Created new WhatsApp client")
+	log.Info().
+		Str("wa_account_id", waAccountID).
+		Msg("Created new WhatsApp client with event handlers")
 
 	return mc, nil
 }
@@ -115,11 +120,14 @@ func (cm *ClientManager) cleanupIdleSessions() {
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
 
+	log.Info().Msg("Started idle session cleanup goroutine")
+
 	for {
 		select {
 		case <-ticker.C:
 			cm.performCleanup()
 		case <-cm.stopChan:
+			log.Info().Msg("Stopping idle session cleanup goroutine")
 			return
 		}
 	}
@@ -131,6 +139,7 @@ func (cm *ClientManager) performCleanup() {
 
 	now := time.Now()
 	idleThreshold := now.Add(-cm.config.SessionIdleTTL)
+	disconnectedCount := 0
 
 	for waAccountID, mc := range cm.clients {
 		mc.mu.RLock()
@@ -148,7 +157,16 @@ func (cm *ClientManager) performCleanup() {
 			mc.Client.Disconnect()
 			mc.Connected = false
 			mc.mu.Unlock()
+
+			disconnectedCount++
 		}
+	}
+
+	if disconnectedCount > 0 {
+		log.Info().
+			Int("disconnected", disconnectedCount).
+			Int("total_clients", len(cm.clients)).
+			Msg("Idle session cleanup completed")
 	}
 }
 
@@ -156,18 +174,24 @@ func (cm *ClientManager) DisconnectAll() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	log.Info().
+		Int("total_clients", len(cm.clients)).
+		Msg("Disconnecting all WhatsApp clients")
+
 	for waAccountID, mc := range cm.clients {
 		mc.mu.Lock()
 		if mc.Connected {
 			mc.Client.Disconnect()
 			mc.Connected = false
-			log.Info().Str("wa_account_id", waAccountID).Msg("Disconnected client during shutdown")
+			log.Debug().Str("wa_account_id", waAccountID).Msg("Disconnected client")
 		}
 		mc.mu.Unlock()
 	}
 
 	close(cm.stopChan)
 	cm.wg.Wait()
+
+	log.Info().Msg("All clients disconnected successfully")
 }
 
 func (cm *ClientManager) GetClientCount() int {

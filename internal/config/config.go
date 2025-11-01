@@ -34,7 +34,7 @@ func Load() (*Config, error) {
 		SendRatePerMinute:       getIntEnv("SEND_RATE_PER_MINUTE_DEFAULT", 15),
 		SendJitterMinMS:         getIntEnv("SEND_JITTER_MIN_MS", 200),
 		SendJitterMaxMS:         getIntEnv("SEND_JITTER_MAX_MS", 600),
-		MaxConcurrentSessions:   getIntEnv("MAX_CONCURRENT_SESSIONS", 100),
+		MaxConcurrentSessions:   getIntEnv("MAX_CONCURRENT_SESSIONS", 10000),
 		WebhookTimeout:          getDurationEnv("WEBHOOK_TIMEOUT", 10*time.Second),
 		WebhookRetryMax:         getIntEnv("WEBHOOK_RETRY_MAX", 3),
 		WebhookRetryBackoffBase: getDurationEnv("WEBHOOK_RETRY_BACKOFF_BASE", 2*time.Second),
